@@ -1,0 +1,81 @@
+services:
+  # Redis cache service
+  redis:
+    image: redis:7-alpine
+    container_name: nakarte-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nakarte-network
+
+  # Telegram bot service
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nakarte-bot
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      # Telegram Bot Configuration
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      
+      # Redis Configuration
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      
+      # Cache Configuration
+      CACHE_TTL: ${CACHE_TTL:-86400}
+      CACHE_TYPE: ${CACHE_TYPE:-redis}
+      
+      # Logging Configuration
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      
+      # Browser Configuration
+      BROWSER_HEADLESS: ${BROWSER_HEADLESS:-true}
+      BROWSER_TIMEOUT: ${BROWSER_TIMEOUT:-30000}
+      
+      # Application Configuration
+      APP_NAME: NakarteGPXBot
+    volumes:
+      # Mount cache directory for file-based cache (optional)
+      - cache_data:/app/cache
+      # Mount logs directory (optional)
+      - ./logs:/app/logs
+    networks:
+      - nakarte-network
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+volumes:
+  redis_data:
+    driver: local
+  cache_data:
+    driver: local
+
+networks:
+  nakarte-network:
+    driver: bridge

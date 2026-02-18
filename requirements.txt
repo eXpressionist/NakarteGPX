@@ -1,0 +1,19 @@
+# Telegram Bot Framework
+aiogram==3.4.1
+aiohttp==3.9.3
+
+# Browser Automation
+playwright==1.41.2
+
+# Caching
+redis==5.0.1
+aioredis==2.0.1
+
+# Environment Variables
+python-dotenv==1.0.1
+
+# Logging
+structlog==24.1.0
+
+# Type Checking
+typing-extensions==4.9.0
