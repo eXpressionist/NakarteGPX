@@ -7,6 +7,7 @@
 ```bash
 # Создайте .env файл
 cp .env.example .env
+cp docker-compose.yml.example docker-compose.yml
 
 # Добавьте токен бота в .env
 echo "TELEGRAM_BOT_TOKEN=your_token_here" >> .env
@@ -92,6 +93,7 @@ playwright install chromium
 
 # Создайте .env
 cp .env.example .env
+cp docker-compose.yml.example docker-compose.yml
 # Отредактируйте .env и установите:
 # CACHE_TYPE=file уже установлен по умолчанию
 

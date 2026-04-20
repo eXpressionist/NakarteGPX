@@ -17,7 +17,7 @@
 | Файл | Назначение | Важность |
 |------|-----------|----------|
 | [`Dockerfile`](Dockerfile:1) | Multi-stage образ для бота | ⭐⭐⭐ |
-| [`docker-compose.yml`](docker-compose.yml:1) | Оркестрация сервиса bot с файловым кешем | ⭐⭐⭐ |
+| [`docker-compose.yml.example`](docker-compose.yml.example:1) | Шаблон оркестрации сервиса bot с файловым кешем | ⭐⭐⭐ |
 | [`.dockerignore`](.dockerignore:1) | Исключения для Docker build | ⭐ |
 
 ### ⚙️ Конфигурация

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This is a Python Telegram bot for downloading GPX tracks from nakarte.me. Runtime code lives in `src/`: `src/main.py` wires the application, `src/bot/handlers.py` contains Telegram handlers, `src/services/` holds GPX extraction and cache backends, and `src/utils/logger.py` configures structured logging. Root-level docs (`README.md`, `QUICKSTART.md`, `TESTING.md`, `PROJECT_STRUCTURE.md`) explain operation and troubleshooting. Docker support is in `Dockerfile` and `docker-compose.yml`. The current standalone test script is `test_nakarte.py`; generated runtime data such as `logs/`, `cache/`, `.env`, and Playwright artifacts should stay untracked.
+This is a Python Telegram bot for downloading GPX tracks from nakarte.me. Runtime code lives in `src/`: `src/main.py` wires the application, `src/bot/handlers.py` contains Telegram handlers, `src/services/` holds GPX extraction and cache backends, and `src/utils/logger.py` configures structured logging. Root-level docs (`README.md`, `QUICKSTART.md`, `TESTING.md`, `PROJECT_STRUCTURE.md`) explain operation and troubleshooting. Docker support is in `Dockerfile` and `docker-compose.yml.example`; local `docker-compose.yml` is ignored. The current standalone test script is `test_nakarte.py`; generated runtime data such as `logs/`, `cache/`, `.env`, and Playwright artifacts should stay untracked.
 
 ## Build, Test, and Development Commands
 

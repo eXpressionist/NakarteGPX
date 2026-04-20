@@ -16,7 +16,7 @@ Telegram бот для скачивания GPX треков с [nakarte.me](htt
 
 ```
 project/
-├── docker-compose.yml       # Docker orchestration
+├── docker-compose.yml.example # Docker Compose template
 ├── Dockerfile              # Multi-stage Docker build
 ├── requirements.txt        # Python dependencies
 ├── .env.example           # Environment variables template
@@ -60,6 +60,7 @@ Create a `.env` file from the example:
 
 ```bash
 cp .env.example .env
+cp docker-compose.yml.example docker-compose.yml
 ```
 
 Edit `.env` and set your bot token:

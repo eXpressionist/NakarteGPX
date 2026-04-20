@@ -18,6 +18,9 @@ cd NakarteGPX
 # Создайте .env файл
 cp .env.example .env
 
+# Создайте локальный docker-compose.yml
+cp docker-compose.yml.example docker-compose.yml
+
 # Откройте .env и вставьте токен
 # Windows:
 notepad .env
@@ -229,7 +232,7 @@ docker-compose exec bot ls -la /app/cache
 ```
 NakarteGPX/
 ├── .env                    ← Ваша конфигурация (создайте из .env.example)
-├── docker-compose.yml      ← Запуск сервисов
+├── docker-compose.yml.example ← Шаблон запуска сервисов
 ├── src/                    ← Код приложения
 ├── cache/                  ← Кеш файлов (создается автоматически)
 ├── README.md               ← Полная документация
