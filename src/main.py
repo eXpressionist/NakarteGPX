@@ -37,7 +37,8 @@ class Application:
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
 
         self.cache_type = os.getenv("CACHE_TYPE", "file")
-        self.cache_ttl = int(os.getenv("CACHE_TTL", "86400"))
+        cache_ttl = os.getenv("CACHE_TTL")
+        self.cache_ttl = int(cache_ttl) if cache_ttl else None
         self.browser_headless = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"
         self.browser_timeout = int(os.getenv("BROWSER_TIMEOUT", "30000"))
 

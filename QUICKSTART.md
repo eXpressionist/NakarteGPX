@@ -145,17 +145,17 @@ cat .env | grep TELEGRAM_BOT_TOKEN
 **Повторная загрузка**: < 1 секунды (из кеша)
 
 Если всегда медленно:
-1. Проверьте, работает ли Redis: `docker-compose ps redis`
-2. Проверьте кеш: `docker-compose exec redis redis-cli KEYS "*"`
+1. Проверьте логи: `docker-compose logs --tail=100 bot`
+2. Проверьте файловый кеш: `docker-compose exec bot ls -la /app/cache`
 
-### ❓ Как использовать file cache вместо Redis?
+### ❓ Где хранится кеш?
 
-В `.env`:
+По умолчанию используется файловый кеш:
 ```env
 CACHE_TYPE=file
 ```
 
-Перезапустите: `docker-compose restart bot`
+В Docker он хранится в volume `cache_data` и не истекает автоматически.
 
 ---
 
@@ -186,8 +186,7 @@ playwright install chromium
 cp .env.example .env
 # Отредактируйте .env:
 # - Добавьте токен
-# - Установите CACHE_TYPE=file
-# - Установите REDIS_HOST=localhost (если Redis не нужен)
+# - CACHE_TYPE=file уже установлен по умолчанию
 
 # 7. Запустите
 python -m src.main
@@ -219,11 +218,8 @@ docker-compose build --no-cache
 # Использование ресурсов
 docker stats nakarte-bot
 
-# Подключение к Redis
-docker-compose exec redis redis-cli
-
-# Проверка кеша
-docker-compose exec redis redis-cli KEYS "*"
+# Проверка файлового кеша
+docker-compose exec bot ls -la /app/cache
 ```
 
 ---

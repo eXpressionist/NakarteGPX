@@ -46,9 +46,6 @@ docker-compose logs -f
 # Только бот
 docker-compose logs -f bot
 
-# Только Redis
-docker-compose logs -f redis
-
 # Последние 100 строк
 docker-compose logs --tail=100 bot
 ```
@@ -69,25 +66,10 @@ docker-compose logs --tail=100 bot
 
 ### Проверка кеша
 
-**Redis:**
-```bash
-# Подключитесь к Redis
-docker-compose exec redis redis-cli
-
-# Посмотрите все ключи
-KEYS *
-
-# Проверьте конкретный ключ
-GET gpx:FqYcC2069tzeSG-foUKGsA
-
-# Проверьте TTL
-TTL gpx:FqYcC2069tzeSG-foUKGsA
-```
-
 **File cache:**
 ```bash
 # Посмотрите файлы в кеше
-ls -lh cache/
+docker-compose exec bot ls -lh /app/cache
 
 # Проверьте содержимое
 cat cache/<hash>.gpx
@@ -111,8 +93,7 @@ playwright install chromium
 # Создайте .env
 cp .env.example .env
 # Отредактируйте .env и установите:
-# CACHE_TYPE=file
-# REDIS_HOST=localhost
+# CACHE_TYPE=file уже установлен по умолчанию
 
 # Запустите бота
 python -m src.main
@@ -212,15 +193,10 @@ BROWSER_TIMEOUT=60000  # 60 секунд
 
 **Решение:**
 ```env
-# Переключитесь на file cache
 CACHE_TYPE=file
 ```
 
-Или проверьте Redis:
-```bash
-docker-compose ps redis
-docker-compose restart redis
-```
+Redis не запускается стандартным `docker-compose.yml`; включайте `CACHE_TYPE=redis` только если Redis запущен отдельно.
 
 ### Проблема: Browser crashes
 
@@ -331,12 +307,12 @@ async def load_test(bot_token, chat_id, num_requests=10):
 ## Чеклист перед деплоем
 
 - [ ] Токен бота установлен в `.env`
-- [ ] Redis работает корректно
+- [ ] Файловый кеш работает корректно
 - [ ] Логи пишутся и читаются
 - [ ] Тестовая ссылка обрабатывается успешно
 - [ ] Кеш работает (проверить cache hit)
 - [ ] Обработка ошибок работает
 - [ ] Ресурсы не превышают лимиты
-- [ ] Backup настроен (для Redis/cache)
+- [ ] Backup настроен для `cache_data`
 - [ ] Мониторинг настроен
 - [ ] Документация актуальна

@@ -23,7 +23,7 @@ class BotHandlers:
         self,
         nakarte_service: NakarteService,
         cache_service: CacheService,
-        cache_ttl: int = 86400,
+        cache_ttl: Optional[int] = None,
         bot_username: str = "",
         bot_id: Optional[int] = None,
         logger: Optional[BoundLogger] = None,
@@ -34,7 +34,7 @@ class BotHandlers:
         Args:
             nakarte_service: Nakarte service instance
             cache_service: Cache service instance
-            cache_ttl: Cache TTL in seconds
+            cache_ttl: Optional cache TTL in seconds
             logger: Logger instance
         """
         self.nakarte_service = nakarte_service

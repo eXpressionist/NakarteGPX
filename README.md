@@ -4,7 +4,7 @@ Telegram бот для скачивания GPX треков с [nakarte.me](htt
 
 ## Features
 
-- 🚀 **Fast Processing**: Intelligent caching system (Redis or file-based)
+- 🚀 **Fast Processing**: Persistent file cache by default, optional Redis backend
 - 🤖 **Browser Automation**: Uses Playwright for reliable GPX extraction
 - 🐳 **Docker Ready**: Fully containerized with docker-compose
 - 📝 **Structured Logging**: Comprehensive logging with request tracing
@@ -118,12 +118,12 @@ All configuration is done via environment variables in the `.env` file:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CACHE_TYPE` | Cache backend (`redis` or `file`) | `redis` |
-| `CACHE_TTL` | Cache time-to-live in seconds | `86400` (24 hours) |
-| `REDIS_HOST` | Redis hostname | `redis` |
-| `REDIS_PORT` | Redis port | `6379` |
-| `REDIS_DB` | Redis database number | `0` |
-| `REDIS_PASSWORD` | Redis password (if required) | _(empty)_ |
+| `CACHE_TYPE` | Cache backend (`file` or `redis`) | `file` |
+| `CACHE_TTL` | Redis cache time-to-live in seconds; unset file cache stores indefinitely | _(empty)_ |
+| `REDIS_HOST` | Redis hostname, only when `CACHE_TYPE=redis` | `localhost` |
+| `REDIS_PORT` | Redis port, only when `CACHE_TYPE=redis` | `6379` |
+| `REDIS_DB` | Redis database number, only when `CACHE_TYPE=redis` | `0` |
+| `REDIS_PASSWORD` | Redis password, only when `CACHE_TYPE=redis` | _(empty)_ |
 | `LOG_LEVEL` | Logging level | `INFO` |
 | `BROWSER_HEADLESS` | Run browser in headless mode | `true` |
 | `BROWSER_TIMEOUT` | Browser timeout in milliseconds | `30000` |
@@ -232,13 +232,11 @@ The Dockerfile uses a multi-stage build to optimize image size:
 
 ### Services
 
-- **bot**: Main application container
-- **redis**: Redis cache (optional, can use file cache instead)
+- **bot**: Main application container. Redis is not started by default.
 
 ### Volumes
 
-- `redis_data`: Persistent Redis data
-- `cache_data`: File-based cache storage
+- `cache_data`: Persistent file-based cache storage
 - `./logs`: Application logs (optional)
 
 ### Resource Limits
@@ -292,7 +290,7 @@ Each log entry includes:
 
 1. Проверьте логи: `docker-compose logs bot`
 2. Убедитесь, что токен бота правильный в `.env`
-3. Проверьте, что Redis запущен: `docker-compose ps redis`
+3. Проверьте, что файловый кеш доступен: `docker-compose exec bot ls -la /app/cache`
 
 ### Не удается скачать GPX
 
@@ -314,19 +312,12 @@ Each log entry includes:
 
 ### Cache Issues
 
-**Redis connection failed:**
-```bash
-# Check Redis status
-docker-compose ps redis
-
-# Restart Redis
-docker-compose restart redis
-```
-
-**Switch to file-based cache:**
+**Default file cache:**
 ```env
 CACHE_TYPE=file
 ```
+
+The Docker setup stores cached GPX files in the `cache_data` volume indefinitely.
 
 ### Memory Issues
 
@@ -341,7 +332,7 @@ If the bot runs out of memory:
 ### Security Recommendations
 
 1. **Use secrets management**: Don't commit `.env` to version control
-2. **Enable Redis password**: Set `REDIS_PASSWORD` in production
+2. **Protect optional Redis**: Set `REDIS_PASSWORD` if you enable Redis separately
 3. **Use reverse proxy**: Put behind nginx for additional security
 4. **Regular updates**: Keep dependencies updated
 5. **Monitor logs**: Set up log aggregation (ELK, Loki, etc.)
@@ -351,7 +342,7 @@ If the bot runs out of memory:
 For high load:
 
 1. **Horizontal scaling**: Run multiple bot instances
-2. **Redis cluster**: Use Redis cluster for distributed caching
+2. **Shared cache**: Use Redis or another shared backend only when running multiple bot instances
 3. **Load balancing**: Use Telegram's webhook mode with load balancer
 
 ### Backup
@@ -359,11 +350,8 @@ For high load:
 Backup important data:
 
 ```bash
-# Backup Redis data
-docker-compose exec redis redis-cli BGSAVE
-
 # Backup file cache
-tar -czf cache-backup.tar.gz cache/
+docker run --rm -v nakartegpx_cache_data:/cache -v "$PWD":/backup alpine tar -czf /backup/cache-backup.tar.gz -C /cache .
 ```
 
 ## Testing
@@ -418,7 +406,7 @@ await service.close()
 ```python
 from src.services.cache_service import create_cache_service
 
-cache = create_cache_service(cache_type='redis')
+cache = create_cache_service()
 
 # Получение из кеша
 data = await cache.get(key)

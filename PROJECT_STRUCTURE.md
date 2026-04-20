@@ -17,7 +17,7 @@
 | Файл | Назначение | Важность |
 |------|-----------|----------|
 | [`Dockerfile`](Dockerfile:1) | Multi-stage образ для бота | ⭐⭐⭐ |
-| [`docker-compose.yml`](docker-compose.yml:1) | Оркестрация сервисов (bot + redis) | ⭐⭐⭐ |
+| [`docker-compose.yml`](docker-compose.yml:1) | Оркестрация сервиса bot с файловым кешем | ⭐⭐⭐ |
 | [`.dockerignore`](.dockerignore:1) | Исключения для Docker build | ⭐ |
 
 ### ⚙️ Конфигурация
@@ -330,7 +330,7 @@ Cache Hit          Cache Miss
 ### Оптимизации
 
 1. **Кеширование**
-   - Redis для быстрого доступа
+   - Файловый кеш по умолчанию; Redis только при явном включении
    - TTL 24 часа по умолчанию
    - Cache hit < 500ms
 

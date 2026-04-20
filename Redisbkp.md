@@ -1,47 +1,38 @@
- Бэкап Redis (основной кэш)
+# Бэкап кэша
 
-    1. Через RDB-снимок (рекомендуется):
+По умолчанию проект использует файловый кэш. Docker хранит GPX-файлы в volume
+`cache_data`; записи не имеют срока истечения и остаются там до ручной очистки
+volume.
 
-     1 # Создать снимок базы данных
-     2 docker exec nakarte-redis redis-cli BGSAVE
-     3
-     4 # Дождаться завершения и скопировать файл
-     5 docker cp nakarte-redis:/data/dump.rdb ./redis-backup-dump.rdb
+## Бэкап файлового кэша
 
-    2. Через AOF-лог (если нужна полная история):
+```bash
+docker run --rm -v nakartegpx_cache_data:/cache -v "%cd%":/backup alpine \
+  tar czf /backup/cache-backup.tar.gz -C /cache .
+```
 
-     1 # Включить AOF (если ещё не включён)
-     2 docker exec nakarte-redis redis-cli CONFIG SET appendonly yes
-     3
-     4 # Скопировать AOF-файл
-     5 docker cp nakarte-redis:/data/appendonly.aof ./redis-backup-aof.aof
+Для PowerShell можно использовать текущий путь явно:
 
-    3. Полный бэкап тома Docker:
+```powershell
+docker run --rm -v nakartegpx_cache_data:/cache -v ${PWD}:/backup alpine tar czf /backup/cache-backup.tar.gz -C /cache .
+```
 
-     1 # Остановить контейнер для консистентности
-     2 docker compose down
-     3
-     4 # Скопировать весь том с данными
-     5 docker run --rm -v nakarte_redis_data:/data -v $(pwd):/backup alpine tar czf /backup/redis-backup.tar.gz
-       /data
-     6
-     7 # Запустить обратно
-     8 docker compose up -d
+## Восстановление файлового кэша
 
-    Бэкап файлового кэша (если используется)
+```bash
+docker run --rm -v nakartegpx_cache_data:/cache -v "%cd%":/backup alpine \
+  sh -c "cd /cache && tar xzf /backup/cache-backup.tar.gz"
+```
 
-    Если CACHE_TYPE=file, то кэш хранится в томе cache_data:
+После восстановления перезапустите бота:
 
-     1 docker compose run --rm -v cache_data:/cache alpine tar czf /tmp/cache-backup.tar.gz /cache
-     2 docker cp $(docker compose ps -q bot):/tmp/cache-backup.tar.gz ./cache-backup.tar.gz
+```bash
+docker-compose restart bot
+```
 
-    На новом сервере
+## Redis
 
-     1 # Redis: восстановить из RDB
-     2 docker cp ./redis-backup-dump.rdb nakarte-redis:/data/dump.rdb
-     3 docker compose restart redis
-
-    ---
-
-    Кэш имеет     TTL 86400 секунд (24 часа), поэтому полный бэкап нужен только если хочешь сохранить текущие закешированные
-    треки.
+Redis больше не запускается стандартным `docker-compose.yml`. Если вы включили
+`CACHE_TYPE=redis` и запускаете Redis отдельно, используйте штатные инструменты
+этого Redis-инстанса (`BGSAVE`, AOF или снапшоты хостинга). В стандартной
+конфигурации бэкап Redis не нужен.

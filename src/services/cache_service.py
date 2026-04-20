@@ -6,7 +6,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
-import redis.asyncio as redis
 from structlog import BoundLogger
 
 from src.utils.logger import get_logger
@@ -21,8 +20,8 @@ class CacheService(ABC):
         pass
 
     @abstractmethod
-    async def set(self, key: str, value: bytes, ttl: int) -> None:
-        """Set value in cache with TTL."""
+    async def set(self, key: str, value: bytes, ttl: Optional[int] = None) -> None:
+        """Set value in cache."""
         pass
 
     @abstractmethod
@@ -62,11 +61,18 @@ class RedisCache(CacheService):
         self.db = db
         self.password = password
         self.logger = logger or get_logger(__name__)
-        self._client: Optional[redis.Redis] = None
+        self._client = None
 
-    async def _get_client(self) -> redis.Redis:
+    async def _get_client(self):
         """Get or create Redis client."""
         if self._client is None:
+            try:
+                import redis.asyncio as redis
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Redis cache requires the 'redis' package to be installed"
+                ) from exc
+
             self._client = redis.Redis(
                 host=self.host,
                 port=self.port,
@@ -91,11 +97,14 @@ class RedisCache(CacheService):
             self.logger.error("cache_get_error", key=key, error=str(e))
             return None
 
-    async def set(self, key: str, value: bytes, ttl: int) -> None:
+    async def set(self, key: str, value: bytes, ttl: Optional[int] = None) -> None:
         """Set value in Redis cache with TTL."""
         try:
             client = await self._get_client()
-            await client.setex(key, ttl, value)
+            if ttl is None:
+                await client.set(key, value)
+            else:
+                await client.setex(key, ttl, value)
             self.logger.info("cache_set", key=key, ttl=ttl)
         except Exception as e:
             self.logger.error("cache_set_error", key=key, error=str(e))
@@ -159,13 +168,13 @@ class FileCache(CacheService):
             self.logger.error("cache_get_error", key=key, error=str(e))
             return None
 
-    async def set(self, key: str, value: bytes, ttl: int) -> None:
-        """Set value in file cache."""
+    async def set(self, key: str, value: bytes, ttl: Optional[int] = None) -> None:
+        """Set value in file cache permanently."""
         try:
             file_path = self._get_file_path(key)
             with open(file_path, "wb") as f:
                 f.write(value)
-            self.logger.info("cache_set", key=key, file=str(file_path))
+            self.logger.info("cache_set", key=key, file=str(file_path), ttl=ttl)
         except Exception as e:
             self.logger.error("cache_set_error", key=key, error=str(e))
 
@@ -184,7 +193,7 @@ class FileCache(CacheService):
 
 
 def create_cache_service(
-    cache_type: str,
+    cache_type: str = "file",
     redis_host: str = "localhost",
     redis_port: int = 6379,
     redis_db: int = 0,
