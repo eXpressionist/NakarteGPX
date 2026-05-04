@@ -116,6 +116,22 @@ class FakeCacheService:
         self.values[key] = value
 
 
+class FakeStatsService:
+    def __init__(self):
+        self.downloads = []
+
+    async def record_download(self, **kwargs):
+        self.downloads.append(kwargs)
+
+    async def get_summary(self):
+        return {
+            "users": {"total": 3, "month": 2, "week": 1},
+            "requests": {"total": 5, "month": 4, "week": 2},
+            "files": {"total": 7, "month": 6, "week": 3},
+            "cache": {"files": 4, "bytes": 2048},
+        }
+
+
 class FakeProcessingMessage:
     async def edit_text(self, text):
         self.text = text
@@ -125,15 +141,17 @@ class FakeProcessingMessage:
 
 
 class FakeMessage:
-    def __init__(self):
-        self.text = "https://nakarte.me/#m=1/2/3&nktl=track123"
+    def __init__(self, text="https://nakarte.me/#m=1/2/3&nktl=track123", user_id=42):
+        self.text = text
         self.chat = types.SimpleNamespace(type="private")
-        self.from_user = types.SimpleNamespace(id=42)
+        self.from_user = types.SimpleNamespace(id=user_id)
         self.entities = []
         self.reply_to_message = None
         self.documents = []
+        self.answers = []
 
     async def answer(self, text):
+        self.answers.append(text)
         return FakeProcessingMessage()
 
     async def answer_document(self, document, caption):
@@ -167,3 +185,59 @@ async def test_multi_track_url_sends_each_gpx_as_separate_document():
         "One.gpx",
         "Two.gpx",
     ]
+
+
+@pytest.mark.asyncio
+async def test_successful_download_is_recorded_in_stats():
+    stats_service = FakeStatsService()
+    handlers = BotHandlers(
+        FakeMultiFileNakarteService(),
+        FakeCacheService(),
+        stats_service=stats_service,
+    )
+
+    await handlers.handle_url(FakeMessage(user_id=77))
+
+    assert stats_service.downloads == [
+        {
+            "user_id": 77,
+            "track_id": "track123",
+            "files_count": 2,
+            "bytes_sent": 118,
+            "cache_hit": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stats_command_requires_admin_user():
+    stats_service = FakeStatsService()
+    handlers = BotHandlers(
+        FakeNakarteService(),
+        FakeCacheService(),
+        stats_service=stats_service,
+        admin_user_ids={77},
+    )
+    message = FakeMessage(text="/stats", user_id=42)
+
+    await handlers.cmd_stats(message)
+
+    assert message.answers == ["Нет доступа к статистике."]
+
+
+@pytest.mark.asyncio
+async def test_stats_command_shows_summary_for_admin_user():
+    stats_service = FakeStatsService()
+    handlers = BotHandlers(
+        FakeNakarteService(),
+        FakeCacheService(),
+        stats_service=stats_service,
+        admin_user_ids={77},
+    )
+    message = FakeMessage(text="/stats", user_id=77)
+
+    await handlers.cmd_stats(message)
+
+    assert "Пользователи" in message.answers[0]
+    assert "Всего: 3" in message.answers[0]
+    assert "Размер: 2.0 KB" in message.answers[0]

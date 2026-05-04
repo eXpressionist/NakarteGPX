@@ -120,7 +120,8 @@ All configuration is done via environment variables in the `.env` file:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CACHE_TYPE` | Cache backend (`file` or `redis`) | `file` |
-| `CACHE_TTL` | Redis cache time-to-live in seconds; unset file cache stores indefinitely | _(empty)_ |
+| `CACHE_TTL` | Cache time-to-live in seconds; unset file cache stores indefinitely | _(empty)_ |
+| `CACHE_DIR` | File cache directory | `./cache` |
 | `REDIS_HOST` | Redis hostname, only when `CACHE_TYPE=redis` | `localhost` |
 | `REDIS_PORT` | Redis port, only when `CACHE_TYPE=redis` | `6379` |
 | `REDIS_DB` | Redis database number, only when `CACHE_TYPE=redis` | `0` |
@@ -128,6 +129,10 @@ All configuration is done via environment variables in the `.env` file:
 | `LOG_LEVEL` | Logging level | `INFO` |
 | `BROWSER_HEADLESS` | Run browser in headless mode | `true` |
 | `BROWSER_TIMEOUT` | Browser timeout in milliseconds | `30000` |
+| `NAKARTE_APP_READY_TIMEOUT` | Early nakarte app readiness wait in milliseconds | `8000` |
+| `DOWNLOAD_CONCURRENCY` | Max concurrent uncached GPX downloads | `1` |
+| `ADMIN_USER_IDS` | Comma-separated Telegram user IDs allowed to use `/stats` | _(empty)_ |
+| `STATS_DB_PATH` | SQLite database path for bot statistics | `./stats/bot_stats.sqlite3` |
 
 ## Usage
 

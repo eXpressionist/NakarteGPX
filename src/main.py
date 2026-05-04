@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from src.bot.handlers import BotHandlers
 from src.services.cache_service import create_cache_service, CacheService
 from src.services.nakarte_service import NakarteService
+from src.services.stats_service import StatsService
 from src.utils.logger import setup_logging, get_logger
 
 
@@ -43,6 +44,9 @@ class Application:
         self.browser_timeout = int(os.getenv("BROWSER_TIMEOUT", "30000"))
         self.nakarte_app_ready_timeout = int(os.getenv("NAKARTE_APP_READY_TIMEOUT", "8000"))
         self.download_concurrency = int(os.getenv("DOWNLOAD_CONCURRENCY", "1"))
+        self.cache_dir = os.getenv("CACHE_DIR", "./cache")
+        self.stats_db_path = os.getenv("STATS_DB_PATH", "./stats/bot_stats.sqlite3")
+        self.admin_user_ids = self._parse_admin_user_ids(os.getenv("ADMIN_USER_IDS", ""))
 
         # Redis configuration
         self.redis_host = os.getenv("REDIS_HOST", "localhost")
@@ -53,6 +57,7 @@ class Application:
         # Initialize services
         self.nakarte_service: Optional[NakarteService] = None
         self.cache_service: Optional[CacheService] = None
+        self.stats_service: Optional[StatsService] = None
         self.bot: Optional[Bot] = None
         self.dp: Optional[Dispatcher] = None
 
@@ -62,6 +67,17 @@ class Application:
             cache_ttl=self.cache_ttl,
             browser_headless=self.browser_headless,
         )
+
+    @staticmethod
+    def _parse_admin_user_ids(raw_value: str) -> set[int]:
+        """Parse comma-separated Telegram user IDs from environment."""
+        user_ids = set()
+        for item in raw_value.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            user_ids.add(int(item))
+        return user_ids
 
     async def setup(self) -> None:
         """Setup application components."""
@@ -82,8 +98,13 @@ class Application:
             redis_port=self.redis_port,
             redis_db=self.redis_db,
             redis_password=self.redis_password,
-            cache_dir="./cache",
+            cache_dir=self.cache_dir,
             logger=self.logger,
+        )
+
+        self.stats_service = StatsService(
+            db_path=self.stats_db_path,
+            cache_dir=self.cache_dir,
         )
 
         # Initialize bot
@@ -106,6 +127,8 @@ class Application:
             bot_username=bot_username,
             bot_id=bot_id,
             max_concurrent_downloads=self.download_concurrency,
+            stats_service=self.stats_service,
+            admin_user_ids=self.admin_user_ids,
             logger=self.logger,
         )
         handlers.register_handlers(self.dp)

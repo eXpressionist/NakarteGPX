@@ -13,6 +13,7 @@ from structlog import BoundLogger
 
 from src.services.cache_service import CacheService
 from src.services.nakarte_service import GpxFile, NakarteService
+from src.services.stats_service import StatsService
 from src.utils.logger import get_logger
 
 
@@ -29,6 +30,8 @@ class BotHandlers:
         bot_username: str = "",
         bot_id: Optional[int] = None,
         max_concurrent_downloads: int = 1,
+        stats_service: Optional[StatsService] = None,
+        admin_user_ids: Optional[set[int]] = None,
         logger: Optional[BoundLogger] = None,
     ):
         """
@@ -45,6 +48,8 @@ class BotHandlers:
         self.cache_ttl = cache_ttl
         self.bot_username = bot_username.lower().lstrip("@")
         self.bot_id = bot_id
+        self.stats_service = stats_service
+        self.admin_user_ids = admin_user_ids or set()
         self._download_semaphore = asyncio.Semaphore(max_concurrent_downloads)
         self._inflight_downloads: dict[str, asyncio.Task[list[GpxFile]]] = {}
         self._inflight_lock = asyncio.Lock()
@@ -130,6 +135,43 @@ class BotHandlers:
             files.append(GpxFile(data=data.encode("utf-8"), filename=filename))
         return files
 
+    @staticmethod
+    def _format_bytes(size: int) -> str:
+        """Format byte count for admin stats."""
+        value = float(size)
+        for unit in ("B", "KB", "MB", "GB"):
+            if value < 1024 or unit == "GB":
+                return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024
+        return f"{value:.1f} GB"
+
+    def _is_admin(self, message: Message) -> bool:
+        """Check whether message sender can use admin commands."""
+        user_id = message.from_user.id if message.from_user else None
+        return isinstance(user_id, int) and user_id in self.admin_user_ids
+
+    async def _record_download_stats(
+        self,
+        user_id: int | str,
+        track_id: str,
+        gpx_files: list[GpxFile],
+        cache_hit: bool,
+    ) -> None:
+        """Record successful download without breaking user flow on stats errors."""
+        if not self.stats_service or not isinstance(user_id, int):
+            return
+
+        try:
+            await self.stats_service.record_download(
+                user_id=user_id,
+                track_id=track_id,
+                files_count=len(gpx_files),
+                bytes_sent=sum(len(file.data) for file in gpx_files),
+                cache_hit=cache_hit,
+            )
+        except Exception as e:
+            self.logger.error("stats_record_error", user_id=user_id, track_id=track_id, error=str(e))
+
     def _extract_nakarte_url(self, text: str) -> Optional[str]:
         """Extract first nakarte URL from message text."""
         match = self.URL_RE.search(text or "")
@@ -176,6 +218,7 @@ class BotHandlers:
         """
         dp.message.register(self.cmd_start, CommandStart())
         dp.message.register(self.cmd_help, Command("help"))
+        dp.message.register(self.cmd_stats, Command("stats"))
         dp.message.register(self.handle_url, F.text)
 
     async def cmd_start(self, message: Message) -> None:
@@ -221,6 +264,42 @@ class BotHandlers:
             "• Автоматическая валидация ссылок\n\n"
             "❓ Проблемы?\n"
             "Убедитесь, что ссылка содержит параметр 'nktl' с идентификатором трека."
+        )
+
+    async def cmd_stats(self, message: Message) -> None:
+        """Handle admin /stats command."""
+        user_id = message.from_user.id if message.from_user else "unknown"
+        self.logger.info("command_stats", user_id=user_id)
+
+        if not self._is_admin(message):
+            self.logger.warning("stats_access_denied", user_id=user_id)
+            if not self._is_group_chat(message):
+                await message.answer("Нет доступа к статистике.")
+            return
+
+        if not self.stats_service:
+            await message.answer("Статистика не настроена.")
+            return
+
+        summary = await self.stats_service.get_summary()
+        cache_size = self._format_bytes(summary["cache"]["bytes"])
+
+        await message.answer(
+            "Статистика бота\n\n"
+            "Пользователи:\n"
+            f"Всего: {summary['users']['total']}\n"
+            f"За 30 дней: {summary['users']['month']}\n"
+            f"За 7 дней: {summary['users']['week']}\n\n"
+            "Загрузки:\n"
+            f"Запросов всего: {summary['requests']['total']}\n"
+            f"GPX файлов всего: {summary['files']['total']}\n"
+            f"За 30 дней: {summary['requests']['month']} запросов, "
+            f"{summary['files']['month']} файлов\n"
+            f"За 7 дней: {summary['requests']['week']} запросов, "
+            f"{summary['files']['week']} файлов\n\n"
+            "Кэш:\n"
+            f"Файлов: {summary['cache']['files']}\n"
+            f"Размер: {cache_size}"
         )
 
     async def handle_url(self, message: Message) -> None:
@@ -323,6 +402,7 @@ class BotHandlers:
             cached_gpx = await self.cache_service.get(cache_key)
 
             if cached_gpx:
+                cache_hit = True
                 self.logger.info(
                     "cache_hit",
                     user_id=user_id,
@@ -336,6 +416,7 @@ class BotHandlers:
                 else:
                     gpx_files = cached_files
             else:
+                cache_hit = False
                 self.logger.info(
                     "cache_miss",
                     user_id=user_id,
@@ -374,6 +455,7 @@ class BotHandlers:
                 files=len(gpx_files),
                 size=sum(len(file.data) for file in gpx_files),
             )
+            await self._record_download_stats(user_id, track_id, gpx_files, cache_hit)
 
         except ValueError as e:
             self.logger.error(
