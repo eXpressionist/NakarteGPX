@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from src.services.stats_service import StatsService
@@ -59,3 +61,27 @@ async def test_stats_service_reports_cache_size(tmp_path):
 
     assert summary["cache"]["files"] == 2
     assert summary["cache"]["bytes"] == 8
+
+
+@pytest.mark.asyncio
+async def test_stats_service_does_not_store_raw_user_or_track_ids(tmp_path):
+    db_path = tmp_path / "bot_stats.sqlite3"
+    service = StatsService(db_path=str(db_path), cache_dir=str(tmp_path), hash_salt="salt")
+
+    await service.record_download(
+        user_id=123456,
+        track_id="secret-track",
+        files_count=1,
+        bytes_sent=100,
+        cache_hit=False,
+        created_at=2_000_000.0,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT user_hash, track_hash FROM download_events").fetchone()
+        columns = [item[1] for item in conn.execute("PRAGMA table_info(download_events)").fetchall()]
+
+    assert row[0] != "123456"
+    assert row[1] != "secret-track"
+    assert "user_id" not in columns
+    assert "track_id" not in columns

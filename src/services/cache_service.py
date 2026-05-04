@@ -135,6 +135,7 @@ class FileCache(CacheService):
     def __init__(
         self,
         cache_dir: str = "./cache",
+        max_cache_bytes: Optional[int] = 1024 * 1024 * 1024,
         logger: Optional[BoundLogger] = None,
     ):
         """
@@ -145,6 +146,7 @@ class FileCache(CacheService):
             logger: Logger instance
         """
         self.cache_dir = Path(cache_dir)
+        self.max_cache_bytes = max_cache_bytes
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.logger = logger or get_logger(__name__)
         self.logger.info("file_cache_initialized", cache_dir=str(self.cache_dir))
@@ -202,6 +204,29 @@ class FileCache(CacheService):
             except FileNotFoundError:
                 pass
 
+    def _prune_cache(self) -> None:
+        if not self.max_cache_bytes or self.max_cache_bytes <= 0:
+            return
+
+        entries = []
+        total_size = 0
+        for file_path in self.cache_dir.glob("*.gpx"):
+            if not file_path.is_file():
+                continue
+            stat = file_path.stat()
+            total_size += stat.st_size
+            entries.append((stat.st_mtime, file_path, stat.st_size))
+
+        if total_size <= self.max_cache_bytes:
+            return
+
+        for _, file_path, size in sorted(entries):
+            meta_path = file_path.with_suffix(".json")
+            self._delete_cache_files(file_path, meta_path)
+            total_size -= size
+            if total_size <= self.max_cache_bytes:
+                break
+
     async def get(self, key: str) -> Optional[bytes]:
         """Get value from file cache."""
         try:
@@ -230,6 +255,7 @@ class FileCache(CacheService):
             meta_path = self._get_meta_path(key)
             await asyncio.to_thread(self._write_file, file_path, value)
             await asyncio.to_thread(self._write_metadata, meta_path, ttl)
+            await asyncio.to_thread(self._prune_cache)
             self.logger.info("cache_set", key=key, file=str(file_path), ttl=ttl)
         except Exception as e:
             self.logger.error("cache_set_error", key=key, error=str(e))
@@ -250,6 +276,7 @@ def create_cache_service(
     redis_db: int = 0,
     redis_password: Optional[str] = None,
     cache_dir: str = "./cache",
+    max_cache_bytes: Optional[int] = 1024 * 1024 * 1024,
     logger: Optional[BoundLogger] = None,
 ) -> CacheService:
     """
@@ -276,4 +303,4 @@ def create_cache_service(
             logger=logger,
         )
     else:
-        return FileCache(cache_dir=cache_dir, logger=logger)
+        return FileCache(cache_dir=cache_dir, max_cache_bytes=max_cache_bytes, logger=logger)

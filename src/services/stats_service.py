@@ -1,6 +1,7 @@
 """Usage statistics service backed by SQLite."""
 
 import asyncio
+import hashlib
 import sqlite3
 import time
 from pathlib import Path
@@ -13,9 +14,15 @@ class StatsService:
     WEEK_SECONDS = 7 * 24 * 60 * 60
     MONTH_SECONDS = 30 * 24 * 60 * 60
 
-    def __init__(self, db_path: str = "./stats/bot_stats.sqlite3", cache_dir: str = "./cache"):
+    def __init__(
+        self,
+        db_path: str = "./stats/bot_stats.sqlite3",
+        cache_dir: str = "./cache",
+        hash_salt: str = "",
+    ):
         self.db_path = Path(db_path)
         self.cache_dir = Path(cache_dir)
+        self.hash_salt = hash_salt
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._schema_lock = asyncio.Lock()
         self._schema_ready = False
@@ -25,12 +32,19 @@ class StatsService:
 
     def _ensure_schema_sync(self) -> None:
         with self._connect() as conn:
+            existing_columns = [
+                row[1]
+                for row in conn.execute("PRAGMA table_info(download_events)").fetchall()
+            ]
+            if existing_columns and "user_hash" not in existing_columns:
+                conn.execute("ALTER TABLE download_events RENAME TO download_events_legacy")
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS download_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    track_id TEXT NOT NULL,
+                    user_hash TEXT NOT NULL,
+                    track_hash TEXT NOT NULL,
                     files_count INTEGER NOT NULL,
                     bytes_sent INTEGER NOT NULL,
                     cache_hit INTEGER NOT NULL,
@@ -38,6 +52,46 @@ class StatsService:
                 )
                 """
             )
+            legacy_exists = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'download_events_legacy'
+                """
+            ).fetchone()[0]
+            if legacy_exists:
+                rows = conn.execute(
+                    """
+                    SELECT user_id, track_id, files_count, bytes_sent, cache_hit, created_at
+                    FROM download_events_legacy
+                    """
+                ).fetchall()
+                conn.executemany(
+                    """
+                    INSERT INTO download_events (
+                        user_hash,
+                        track_hash,
+                        files_count,
+                        bytes_sent,
+                        cache_hit,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            self._hash_value(row[0]),
+                            self._hash_value(row[1]),
+                            row[2],
+                            row[3],
+                            row[4],
+                            row[5],
+                        )
+                        for row in rows
+                    ],
+                )
+                conn.execute("DROP TABLE download_events_legacy")
+
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_download_events_created_at
@@ -46,10 +100,14 @@ class StatsService:
             )
             conn.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_download_events_user_id
-                ON download_events(user_id)
+                CREATE INDEX IF NOT EXISTS idx_download_events_user_hash
+                ON download_events(user_hash)
                 """
             )
+
+    def _hash_value(self, value: object) -> str:
+        raw_value = f"{self.hash_salt}:{value}".encode("utf-8")
+        return hashlib.sha256(raw_value).hexdigest()
 
     async def _ensure_schema(self) -> None:
         if self._schema_ready:
@@ -62,8 +120,8 @@ class StatsService:
 
     def _record_download_sync(
         self,
-        user_id: int,
-        track_id: str,
+        user_hash: str,
+        track_hash: str,
         files_count: int,
         bytes_sent: int,
         cache_hit: bool,
@@ -73,8 +131,8 @@ class StatsService:
             conn.execute(
                 """
                 INSERT INTO download_events (
-                    user_id,
-                    track_id,
+                    user_hash,
+                    track_hash,
                     files_count,
                     bytes_sent,
                     cache_hit,
@@ -82,7 +140,7 @@ class StatsService:
                 )
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, track_id, files_count, bytes_sent, int(cache_hit), created_at),
+                (user_hash, track_hash, files_count, bytes_sent, int(cache_hit), created_at),
             )
 
     async def record_download(
@@ -98,8 +156,8 @@ class StatsService:
         await self._ensure_schema()
         await asyncio.to_thread(
             self._record_download_sync,
-            user_id,
-            track_id,
+            self._hash_value(user_id),
+            self._hash_value(track_id),
             files_count,
             bytes_sent,
             cache_hit,
@@ -108,10 +166,10 @@ class StatsService:
 
     def _count_unique_users(self, conn: sqlite3.Connection, since: Optional[float] = None) -> int:
         if since is None:
-            row = conn.execute("SELECT COUNT(DISTINCT user_id) FROM download_events").fetchone()
+            row = conn.execute("SELECT COUNT(DISTINCT user_hash) FROM download_events").fetchone()
         else:
             row = conn.execute(
-                "SELECT COUNT(DISTINCT user_id) FROM download_events WHERE created_at >= ?",
+                "SELECT COUNT(DISTINCT user_hash) FROM download_events WHERE created_at >= ?",
                 (since,),
             ).fetchone()
         return int(row[0] or 0)

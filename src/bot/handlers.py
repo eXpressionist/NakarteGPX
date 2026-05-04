@@ -1,8 +1,10 @@
 """Telegram bot handlers."""
 
 import asyncio
+import hashlib
 import json
 import re
+import time
 import uuid
 from typing import Optional
 
@@ -32,6 +34,11 @@ class BotHandlers:
         max_concurrent_downloads: int = 1,
         stats_service: Optional[StatsService] = None,
         admin_user_ids: Optional[set[int]] = None,
+        rate_limit_requests: int = 5,
+        rate_limit_window_seconds: int = 60,
+        max_pending_downloads: int = 10,
+        max_gpx_files: int = 20,
+        max_gpx_bytes: int = 20 * 1024 * 1024,
         logger: Optional[BoundLogger] = None,
     ):
         """
@@ -50,26 +57,60 @@ class BotHandlers:
         self.bot_id = bot_id
         self.stats_service = stats_service
         self.admin_user_ids = admin_user_ids or set()
+        self.rate_limit_requests = rate_limit_requests
+        self.rate_limit_window_seconds = rate_limit_window_seconds
+        self.max_pending_downloads = max_pending_downloads
+        self.max_gpx_files = max_gpx_files
+        self.max_gpx_bytes = max_gpx_bytes
         self._download_semaphore = asyncio.Semaphore(max_concurrent_downloads)
         self._inflight_downloads: dict[str, asyncio.Task[list[GpxFile]]] = {}
         self._inflight_lock = asyncio.Lock()
+        self._pending_downloads = 0
+        self._rate_limit_hits: dict[int, list[float]] = {}
         self.logger = logger or get_logger(__name__)
 
-    async def _download_uncached_gpx(self, url: str) -> bytes:
-        """Run expensive GPX extraction with bounded concurrency."""
-        async with self._download_semaphore:
-            return await self.nakarte_service.download_gpx(url)
+    @staticmethod
+    def _safe_hash(value: object) -> str:
+        """Short stable hash for sensitive values in logs."""
+        return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+
+    def _check_rate_limit(self, user_id: int | str) -> bool:
+        """Return True when the user is still within the request budget."""
+        if not isinstance(user_id, int) or self.rate_limit_requests <= 0:
+            return True
+
+        now = time.monotonic()
+        window_start = now - self.rate_limit_window_seconds
+        hits = [
+            timestamp
+            for timestamp in self._rate_limit_hits.get(user_id, [])
+            if timestamp >= window_start
+        ]
+        if len(hits) >= self.rate_limit_requests:
+            self._rate_limit_hits[user_id] = hits
+            return False
+
+        hits.append(now)
+        self._rate_limit_hits[user_id] = hits
+        return True
 
     async def _download_uncached_gpx_files(self, url: str) -> list[GpxFile]:
         """Run expensive GPX extraction with bounded concurrency."""
-        async with self._download_semaphore:
-            if hasattr(self.nakarte_service, "download_gpx_files"):
-                return await self.nakarte_service.download_gpx_files(url)
+        if self._pending_downloads >= self.max_pending_downloads:
+            raise RuntimeError("Too many downloads are queued")
 
-            gpx_data = await self.nakarte_service.download_gpx(url)
-            track_id = self.nakarte_service.extract_track_id(url)
-            filename = self.nakarte_service.build_filename_from_gpx(gpx_data, track_id)
-            return [GpxFile(data=gpx_data, filename=filename)]
+        self._pending_downloads += 1
+        try:
+            async with self._download_semaphore:
+                if hasattr(self.nakarte_service, "download_gpx_files"):
+                    return await self.nakarte_service.download_gpx_files(url)
+
+                gpx_data = await self.nakarte_service.download_gpx(url)
+                track_id = self.nakarte_service.extract_track_id(url)
+                filename = self.nakarte_service.build_filename_from_gpx(gpx_data, track_id)
+                return [GpxFile(data=gpx_data, filename=filename)]
+        finally:
+            self._pending_downloads -= 1
 
     async def _download_gpx_singleflight(self, track_id: str, url: str) -> bytes:
         """Share one in-progress download for identical track IDs."""
@@ -135,6 +176,14 @@ class BotHandlers:
             files.append(GpxFile(data=data.encode("utf-8"), filename=filename))
         return files
 
+    def _validate_gpx_files(self, files: list[GpxFile]) -> None:
+        """Reject oversized responses before caching or sending."""
+        total_bytes = sum(len(file.data) for file in files)
+        if len(files) > self.max_gpx_files:
+            raise RuntimeError("Too many GPX files in one response")
+        if total_bytes > self.max_gpx_bytes:
+            raise RuntimeError("GPX response is too large")
+
     @staticmethod
     def _format_bytes(size: int) -> str:
         """Format byte count for admin stats."""
@@ -170,7 +219,12 @@ class BotHandlers:
                 cache_hit=cache_hit,
             )
         except Exception as e:
-            self.logger.error("stats_record_error", user_id=user_id, track_id=track_id, error=str(e))
+            self.logger.error(
+                "stats_record_error",
+                user_hash=self._safe_hash(user_id),
+                track_hash=self._safe_hash(track_id),
+                error=str(e),
+            )
 
     def _extract_nakarte_url(self, text: str) -> Optional[str]:
         """Extract first nakarte URL from message text."""
@@ -269,10 +323,11 @@ class BotHandlers:
     async def cmd_stats(self, message: Message) -> None:
         """Handle admin /stats command."""
         user_id = message.from_user.id if message.from_user else "unknown"
-        self.logger.info("command_stats", user_id=user_id)
+        user_hash = self._safe_hash(user_id)
+        self.logger.info("command_stats", user_hash=user_hash)
 
         if not self._is_admin(message):
-            self.logger.warning("stats_access_denied", user_id=user_id)
+            self.logger.warning("stats_access_denied", user_hash=user_hash)
             if not self._is_group_chat(message):
                 await message.answer("Нет доступа к статистике.")
             return
@@ -313,14 +368,15 @@ class BotHandlers:
             return
 
         user_id = message.from_user.id if message.from_user else "unknown"
+        user_hash = self._safe_hash(user_id)
         request_id = str(uuid.uuid4())
         text = message.text.strip()
         self.logger.info(
             "message_received",
             chat_type=message.chat.type,
-            user_id=user_id,
+            user_hash=user_hash,
             has_entities=bool(message.entities),
-            text_preview=text[:120],
+            text_length=len(text),
         )
 
         # In groups, process only when the bot is tagged in the message
@@ -335,7 +391,7 @@ class BotHandlers:
             self.logger.info(
                 "group_message_ignored",
                 reason="no_mention_or_reply",
-                user_id=user_id,
+                user_hash=user_hash,
                 chat_type=message.chat.type,
             )
             return
@@ -344,7 +400,7 @@ class BotHandlers:
         if not url:
             self.logger.info(
                 "message_ignored_no_nakarte_url",
-                user_id=user_id,
+                user_hash=user_hash,
                 chat_type=message.chat.type,
             )
             if not self._is_group_chat(message):
@@ -357,18 +413,16 @@ class BotHandlers:
 
         self.logger.info(
             "url_received",
-            user_id=user_id,
+            user_hash=user_hash,
             request_id=request_id,
-            url=url,
         )
 
         # Validate URL
         if not self.nakarte_service.validate_url(url):
             self.logger.warning(
                 "invalid_url",
-                user_id=user_id,
+                user_hash=user_hash,
                 request_id=request_id,
-                url=url,
             )
             await message.answer(
                 "❌ Неверный формат ссылки!\n\n"
@@ -380,17 +434,26 @@ class BotHandlers:
 
         # Extract track ID for cache key
         track_id = self.nakarte_service.extract_track_id(url)
+        track_hash = self._safe_hash(track_id)
         if not track_id:
             self.logger.error(
                 "track_id_extraction_failed",
-                user_id=user_id,
+                user_hash=user_hash,
                 request_id=request_id,
-                url=url,
             )
             await message.answer(
                 "❌ Не удалось извлечь идентификатор трека из ссылки.\n\n"
                 "Убедитесь, что ссылка содержит параметр 'nktl'."
             )
+            return
+
+        if not self._check_rate_limit(user_id):
+            self.logger.warning(
+                "rate_limit_exceeded",
+                user_hash=user_hash,
+                request_id=request_id,
+            )
+            await message.answer("Слишком много запросов. Попробуйте позже.")
             return
 
         # Send processing message
@@ -405,9 +468,9 @@ class BotHandlers:
                 cache_hit = True
                 self.logger.info(
                     "cache_hit",
-                    user_id=user_id,
+                    user_hash=user_hash,
                     request_id=request_id,
-                    track_id=track_id,
+                    track_hash=track_hash,
                 )
                 cached_files = self._decode_gpx_files(cached_gpx)
                 if cached_files is None:
@@ -419,13 +482,14 @@ class BotHandlers:
                 cache_hit = False
                 self.logger.info(
                     "cache_miss",
-                    user_id=user_id,
+                    user_hash=user_hash,
                     request_id=request_id,
-                    track_id=track_id,
+                    track_hash=track_hash,
                 )
                 # Download GPX
                 await processing_msg.edit_text("⏳ Загружаю трек с nakarte.me...")
                 gpx_files = await self._download_gpx_files_singleflight(track_id, url)
+                self._validate_gpx_files(gpx_files)
 
                 # Store in cache
                 await self.cache_service.set(
@@ -435,6 +499,7 @@ class BotHandlers:
                 )
 
             for index, file in enumerate(gpx_files, 1):
+                self._validate_gpx_files(gpx_files)
                 gpx_file = BufferedInputFile(file.data, filename=file.filename)
                 caption = (
                     f"✅ Трек успешно загружен!\n\nФайл: {file.filename}"
@@ -449,9 +514,9 @@ class BotHandlers:
 
             self.logger.info(
                 "gpx_sent",
-                user_id=user_id,
+                user_hash=user_hash,
                 request_id=request_id,
-                track_id=track_id,
+                track_hash=track_hash,
                 files=len(gpx_files),
                 size=sum(len(file.data) for file in gpx_files),
             )
@@ -460,7 +525,7 @@ class BotHandlers:
         except ValueError as e:
             self.logger.error(
                 "validation_error",
-                user_id=user_id,
+                user_hash=user_hash,
                 request_id=request_id,
                 error=str(e),
             )
@@ -472,7 +537,7 @@ class BotHandlers:
         except RuntimeError as e:
             self.logger.error(
                 "download_error",
-                user_id=user_id,
+                user_hash=user_hash,
                 request_id=request_id,
                 error=str(e),
             )
@@ -488,7 +553,7 @@ class BotHandlers:
         except Exception as e:
             self.logger.error(
                 "unexpected_error",
-                user_id=user_id,
+                user_hash=user_hash,
                 request_id=request_id,
                 error=str(e),
             )

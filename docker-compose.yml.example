@@ -12,6 +12,9 @@ services:
 
       # Cache Configuration
       CACHE_TYPE: ${CACHE_TYPE:-file}
+      CACHE_TTL: ${CACHE_TTL:-2592000}
+      CACHE_DIR: ${CACHE_DIR:-./cache}
+      CACHE_MAX_BYTES: ${CACHE_MAX_BYTES:-1073741824}
 
       # Logging Configuration
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -19,12 +22,27 @@ services:
       # Browser Configuration
       BROWSER_HEADLESS: ${BROWSER_HEADLESS:-true}
       BROWSER_TIMEOUT: ${BROWSER_TIMEOUT:-30000}
+      NAKARTE_APP_READY_TIMEOUT: ${NAKARTE_APP_READY_TIMEOUT:-8000}
+      DOWNLOAD_CONCURRENCY: ${DOWNLOAD_CONCURRENCY:-1}
+
+      # Security Limits
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-5}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      MAX_PENDING_DOWNLOADS: ${MAX_PENDING_DOWNLOADS:-10}
+      MAX_GPX_FILES: ${MAX_GPX_FILES:-20}
+      MAX_GPX_BYTES: ${MAX_GPX_BYTES:-20971520}
+
+      # Admin Statistics
+      ADMIN_USER_IDS: ${ADMIN_USER_IDS:-}
+      STATS_DB_PATH: ${STATS_DB_PATH:-./stats/bot_stats.sqlite3}
+      STATS_HASH_SALT: ${STATS_HASH_SALT:-}
 
       # Application Configuration
       APP_NAME: NakarteGPXBot
     volumes:
       # Persistent file-based cache
       - cache_data:/app/cache
+      - stats_data:/app/stats
       # Mount logs directory (optional)
       - ./logs:/app/logs
     networks:
@@ -44,6 +62,8 @@ services:
 
 volumes:
   cache_data:
+    driver: local
+  stats_data:
     driver: local
 
 networks:

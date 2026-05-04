@@ -60,3 +60,14 @@ async def test_file_cache_respects_ttl(tmp_path, monkeypatch):
     current_time = 1011.0
 
     assert await cache.get("gpx:track") is None
+
+
+@pytest.mark.asyncio
+async def test_file_cache_prunes_oldest_files_when_size_limit_is_exceeded(tmp_path):
+    cache = FileCache(cache_dir=str(tmp_path), max_cache_bytes=10)
+
+    await cache.set("gpx:first", b"123456")
+    await cache.set("gpx:second", b"abcdef")
+
+    assert await cache.get("gpx:first") is None
+    assert await cache.get("gpx:second") == b"abcdef"

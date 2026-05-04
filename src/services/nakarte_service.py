@@ -1,10 +1,13 @@
 """Service for extracting GPX data from nakarte.me."""
 
+import hashlib
 import html
+import ipaddress
 import re
 import time
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlparse
 
 from playwright.async_api import (
     Browser,
@@ -222,6 +225,37 @@ class NakarteService:
         track_id = self.extract_track_id(url)
         return self.split_gpx_files(gpx_data, track_id)
 
+    @staticmethod
+    def is_allowed_request_url(url: str) -> bool:
+        """Check whether Playwright may request a URL."""
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return False
+
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not host:
+            return False
+
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+        if ip is not None:
+            return False
+
+        return host == "nakarte.me" or host.endswith(".nakarte.me")
+
+    async def _route_request(self, route) -> None:
+        """Allow only nakarte-owned browser requests."""
+        if self.is_allowed_request_url(route.request.url):
+            await route.continue_()
+        else:
+            self.logger.warning(
+                "browser_request_blocked",
+                url_hash=hashlib.sha256(route.request.url.encode("utf-8")).hexdigest()[:12],
+            )
+            await route.abort()
+
     async def _get_browser(self) -> Browser:
         """Get or create browser instance."""
         if self._browser is None:
@@ -264,6 +298,7 @@ class NakarteService:
         try:
             page_start = time.perf_counter()
             page = await browser.new_page()
+            await page.route("**/*", self._route_request)
             self.logger.info(
                 "page_created",
                 track_id=track_id,

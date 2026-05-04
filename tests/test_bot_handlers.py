@@ -105,6 +105,14 @@ class FakeMultiFileNakarteService(FakeNakarteService):
         ]
 
 
+class FakeHugeNakarteService(FakeNakarteService):
+    async def download_gpx_files(self, url):
+        self.download_calls += 1
+        return [
+            types.SimpleNamespace(data=b"x" * 20, filename="huge.gpx"),
+        ]
+
+
 class FakeCacheService:
     def __init__(self):
         self.values = {}

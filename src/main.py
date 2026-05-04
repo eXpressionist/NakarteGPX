@@ -38,15 +38,23 @@ class Application:
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
 
         self.cache_type = os.getenv("CACHE_TYPE", "file")
-        cache_ttl = os.getenv("CACHE_TTL")
-        self.cache_ttl = int(cache_ttl) if cache_ttl else None
+        cache_ttl = os.getenv("CACHE_TTL", "2592000")
+        self.cache_ttl = int(cache_ttl) if cache_ttl and cache_ttl != "0" else None
         self.browser_headless = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"
         self.browser_timeout = int(os.getenv("BROWSER_TIMEOUT", "30000"))
         self.nakarte_app_ready_timeout = int(os.getenv("NAKARTE_APP_READY_TIMEOUT", "8000"))
         self.download_concurrency = int(os.getenv("DOWNLOAD_CONCURRENCY", "1"))
         self.cache_dir = os.getenv("CACHE_DIR", "./cache")
+        cache_max_bytes = os.getenv("CACHE_MAX_BYTES", str(1024 * 1024 * 1024))
+        self.cache_max_bytes = int(cache_max_bytes) if cache_max_bytes and cache_max_bytes != "0" else None
         self.stats_db_path = os.getenv("STATS_DB_PATH", "./stats/bot_stats.sqlite3")
+        self.stats_hash_salt = os.getenv("STATS_HASH_SALT", self.bot_token)
         self.admin_user_ids = self._parse_admin_user_ids(os.getenv("ADMIN_USER_IDS", ""))
+        self.rate_limit_requests = int(os.getenv("RATE_LIMIT_REQUESTS", "5"))
+        self.rate_limit_window_seconds = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+        self.max_pending_downloads = int(os.getenv("MAX_PENDING_DOWNLOADS", "10"))
+        self.max_gpx_files = int(os.getenv("MAX_GPX_FILES", "20"))
+        self.max_gpx_bytes = int(os.getenv("MAX_GPX_BYTES", str(20 * 1024 * 1024)))
 
         # Redis configuration
         self.redis_host = os.getenv("REDIS_HOST", "localhost")
@@ -76,7 +84,10 @@ class Application:
             item = item.strip()
             if not item:
                 continue
-            user_ids.add(int(item))
+            try:
+                user_ids.add(int(item))
+            except ValueError:
+                continue
         return user_ids
 
     async def setup(self) -> None:
@@ -99,12 +110,14 @@ class Application:
             redis_db=self.redis_db,
             redis_password=self.redis_password,
             cache_dir=self.cache_dir,
+            max_cache_bytes=self.cache_max_bytes,
             logger=self.logger,
         )
 
         self.stats_service = StatsService(
             db_path=self.stats_db_path,
             cache_dir=self.cache_dir,
+            hash_salt=self.stats_hash_salt,
         )
 
         # Initialize bot
@@ -129,6 +142,11 @@ class Application:
             max_concurrent_downloads=self.download_concurrency,
             stats_service=self.stats_service,
             admin_user_ids=self.admin_user_ids,
+            rate_limit_requests=self.rate_limit_requests,
+            rate_limit_window_seconds=self.rate_limit_window_seconds,
+            max_pending_downloads=self.max_pending_downloads,
+            max_gpx_files=self.max_gpx_files,
+            max_gpx_bytes=self.max_gpx_bytes,
             logger=self.logger,
         )
         handlers.register_handlers(self.dp)
