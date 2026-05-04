@@ -3,6 +3,7 @@
 import html
 import re
 import time
+from dataclasses import dataclass
 from typing import Optional
 
 from playwright.async_api import (
@@ -14,6 +15,14 @@ from playwright.async_api import (
 from structlog import BoundLogger
 
 from src.utils.logger import get_logger
+
+
+@dataclass(frozen=True)
+class GpxFile:
+    """Single GPX file ready to send."""
+
+    data: bytes
+    filename: str
 
 
 class NakarteService:
@@ -141,6 +150,77 @@ class NakarteService:
             short_id = (track_id or "track")[:8]
             safe_name = f"Nakarte track {short_id}"
         return f"{safe_name}.gpx"
+
+    @staticmethod
+    def _unique_filename(filename: str, used_filenames: set[str]) -> str:
+        """Return a filename that is unique within one Telegram response."""
+        if filename not in used_filenames:
+            used_filenames.add(filename)
+            return filename
+
+        stem, suffix = filename.rsplit(".", 1) if "." in filename else (filename, "gpx")
+        index = 2
+        while True:
+            candidate = f"{stem} {index}.{suffix}"
+            if candidate not in used_filenames:
+                used_filenames.add(candidate)
+                return candidate
+            index += 1
+
+    @staticmethod
+    def _wrap_track_as_gpx(source_text: str, track_xml: str) -> str:
+        """Wrap one <trk> element with the source GPX header and metadata."""
+        xml_match = re.match(r"\s*(<\?xml[^>]*\?>)", source_text, flags=re.IGNORECASE)
+        gpx_match = re.search(r"<gpx\b[^>]*>", source_text, flags=re.IGNORECASE)
+        metadata_match = re.search(
+            r"<metadata\b[^>]*>.*?</metadata>\s*",
+            source_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        xml_decl = xml_match.group(1) if xml_match else '<?xml version="1.0" encoding="UTF-8"?>'
+        gpx_open = (
+            gpx_match.group(0)
+            if gpx_match
+            else '<gpx version="1.1" creator="nakarte.me" xmlns="http://www.topografix.com/GPX/1/1">'
+        )
+        metadata = metadata_match.group(0) if metadata_match else ""
+
+        return f"{xml_decl}\n{gpx_open}\n{metadata}{track_xml}\n</gpx>"
+
+    def split_gpx_files(self, gpx_data: bytes | str, track_id: Optional[str] = None) -> list[GpxFile]:
+        """Split a multi-track GPX document into one GPX file per track."""
+        if isinstance(gpx_data, bytes):
+            text = gpx_data.decode("utf-8", errors="ignore")
+        else:
+            text = gpx_data
+
+        track_matches = list(
+            re.finditer(r"<trk\b[^>]*>.*?</trk>", text, flags=re.IGNORECASE | re.DOTALL)
+        )
+        if len(track_matches) <= 1:
+            data = self.ensure_friendly_track_name(gpx_data, track_id)
+            return [GpxFile(data=data, filename=self.build_filename_from_gpx(data, track_id))]
+
+        files = []
+        used_filenames: set[str] = set()
+        for index, match in enumerate(track_matches, 1):
+            single_track_gpx = self._wrap_track_as_gpx(text, match.group(0))
+            item_track_id = f"{track_id}-{index}" if track_id else None
+            data = self.ensure_friendly_track_name(single_track_gpx, item_track_id)
+            filename = self._unique_filename(
+                self.build_filename_from_gpx(data, item_track_id),
+                used_filenames,
+            )
+            files.append(GpxFile(data=data, filename=filename))
+
+        return files
+
+    async def download_gpx_files(self, url: str) -> list[GpxFile]:
+        """Download GPX track data and return one file per track."""
+        gpx_data = await self.download_gpx(url)
+        track_id = self.extract_track_id(url)
+        return self.split_gpx_files(gpx_data, track_id)
 
     async def _get_browser(self) -> Browser:
         """Get or create browser instance."""

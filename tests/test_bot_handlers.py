@@ -89,6 +89,22 @@ class FakeNakarteService:
         return f"{track_id}.gpx"
 
 
+class FakeMultiFileNakarteService(FakeNakarteService):
+    async def download_gpx_files(self, url):
+        self.download_calls += 1
+        await asyncio.sleep(0.01)
+        return [
+            types.SimpleNamespace(
+                data=b"<?xml version='1.0'?><gpx><trk><name>One</name></trk></gpx>",
+                filename="One.gpx",
+            ),
+            types.SimpleNamespace(
+                data=b"<?xml version='1.0'?><gpx><trk><name>Two</name></trk></gpx>",
+                filename="Two.gpx",
+            ),
+        ]
+
+
 class FakeCacheService:
     def __init__(self):
         self.values = {}
@@ -136,3 +152,18 @@ async def test_concurrent_same_track_downloads_once():
     )
 
     assert nakarte_service.download_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_multi_track_url_sends_each_gpx_as_separate_document():
+    nakarte_service = FakeMultiFileNakarteService()
+    cache_service = FakeCacheService()
+    handlers = BotHandlers(nakarte_service, cache_service)
+    message = FakeMessage()
+
+    await handlers.handle_url(message)
+
+    assert [document.filename for document, _ in message.documents] == [
+        "One.gpx",
+        "Two.gpx",
+    ]

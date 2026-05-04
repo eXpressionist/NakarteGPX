@@ -1,6 +1,7 @@
 """Telegram bot handlers."""
 
 import asyncio
+import json
 import re
 import uuid
 from typing import Optional
@@ -11,7 +12,7 @@ from aiogram.types import Message, BufferedInputFile
 from structlog import BoundLogger
 
 from src.services.cache_service import CacheService
-from src.services.nakarte_service import NakarteService
+from src.services.nakarte_service import GpxFile, NakarteService
 from src.utils.logger import get_logger
 
 
@@ -45,7 +46,7 @@ class BotHandlers:
         self.bot_username = bot_username.lower().lstrip("@")
         self.bot_id = bot_id
         self._download_semaphore = asyncio.Semaphore(max_concurrent_downloads)
-        self._inflight_downloads: dict[str, asyncio.Task[bytes]] = {}
+        self._inflight_downloads: dict[str, asyncio.Task[list[GpxFile]]] = {}
         self._inflight_lock = asyncio.Lock()
         self.logger = logger or get_logger(__name__)
 
@@ -54,13 +55,33 @@ class BotHandlers:
         async with self._download_semaphore:
             return await self.nakarte_service.download_gpx(url)
 
+    async def _download_uncached_gpx_files(self, url: str) -> list[GpxFile]:
+        """Run expensive GPX extraction with bounded concurrency."""
+        async with self._download_semaphore:
+            if hasattr(self.nakarte_service, "download_gpx_files"):
+                return await self.nakarte_service.download_gpx_files(url)
+
+            gpx_data = await self.nakarte_service.download_gpx(url)
+            track_id = self.nakarte_service.extract_track_id(url)
+            filename = self.nakarte_service.build_filename_from_gpx(gpx_data, track_id)
+            return [GpxFile(data=gpx_data, filename=filename)]
+
     async def _download_gpx_singleflight(self, track_id: str, url: str) -> bytes:
         """Share one in-progress download for identical track IDs."""
+        files = await self._download_gpx_files_singleflight(track_id, url)
+        return files[0].data
+
+    async def _download_gpx_files_singleflight(
+        self,
+        track_id: str,
+        url: str,
+    ) -> list[GpxFile]:
+        """Share one in-progress multi-file download for identical track IDs."""
         created_task = False
         async with self._inflight_lock:
             task = self._inflight_downloads.get(track_id)
             if task is None:
-                task = asyncio.create_task(self._download_uncached_gpx(url))
+                task = asyncio.create_task(self._download_uncached_gpx_files(url))
                 self._inflight_downloads[track_id] = task
                 created_task = True
                 self.logger.info("download_started", track_id=track_id)
@@ -74,6 +95,40 @@ class BotHandlers:
                 async with self._inflight_lock:
                     if self._inflight_downloads.get(track_id) is task:
                         self._inflight_downloads.pop(track_id, None)
+
+    @staticmethod
+    def _encode_gpx_files(files: list[GpxFile]) -> bytes:
+        """Encode multiple GPX files for byte-oriented cache backends."""
+        payload = [
+            {
+                "filename": file.filename,
+                "data": file.data.decode("utf-8"),
+            }
+            for file in files
+        ]
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    @staticmethod
+    def _decode_gpx_files(payload: bytes) -> Optional[list[GpxFile]]:
+        """Decode cached multi-file GPX payload."""
+        try:
+            raw_files = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+
+        if not isinstance(raw_files, list):
+            return None
+
+        files = []
+        for raw_file in raw_files:
+            if not isinstance(raw_file, dict):
+                return None
+            filename = raw_file.get("filename")
+            data = raw_file.get("data")
+            if not isinstance(filename, str) or not isinstance(data, str):
+                return None
+            files.append(GpxFile(data=data.encode("utf-8"), filename=filename))
+        return files
 
     def _extract_nakarte_url(self, text: str) -> Optional[str]:
         """Extract first nakarte URL from message text."""
@@ -274,7 +329,12 @@ class BotHandlers:
                     request_id=request_id,
                     track_id=track_id,
                 )
-                gpx_data = cached_gpx
+                cached_files = self._decode_gpx_files(cached_gpx)
+                if cached_files is None:
+                    filename = self.nakarte_service.build_filename_from_gpx(cached_gpx, track_id)
+                    gpx_files = [GpxFile(data=cached_gpx, filename=filename)]
+                else:
+                    gpx_files = cached_files
             else:
                 self.logger.info(
                     "cache_miss",
@@ -284,19 +344,24 @@ class BotHandlers:
                 )
                 # Download GPX
                 await processing_msg.edit_text("⏳ Загружаю трек с nakarte.me...")
-                gpx_data = await self._download_gpx_singleflight(track_id, url)
+                gpx_files = await self._download_gpx_files_singleflight(track_id, url)
 
                 # Store in cache
-                await self.cache_service.set(cache_key, gpx_data, self.cache_ttl)
+                await self.cache_service.set(
+                    cache_key,
+                    self._encode_gpx_files(gpx_files),
+                    self.cache_ttl,
+                )
 
-            # Build friendly filename from GPX metadata
-            filename = self.nakarte_service.build_filename_from_gpx(gpx_data, track_id)
-            gpx_file = BufferedInputFile(gpx_data, filename=filename)
+            for index, file in enumerate(gpx_files, 1):
+                gpx_file = BufferedInputFile(file.data, filename=file.filename)
+                caption = (
+                    f"✅ Трек успешно загружен!\n\nФайл: {file.filename}"
+                    if len(gpx_files) == 1
+                    else f"✅ Трек {index}/{len(gpx_files)}\n\nФайл: {file.filename}"
+                )
 
-            await message.answer_document(
-                document=gpx_file,
-                caption=f"✅ Трек успешно загружен!\n\nФайл: {filename}",
-            )
+                await message.answer_document(document=gpx_file, caption=caption)
 
             # Delete processing message
             await processing_msg.delete()
@@ -306,7 +371,8 @@ class BotHandlers:
                 user_id=user_id,
                 request_id=request_id,
                 track_id=track_id,
-                size=len(gpx_data),
+                files=len(gpx_files),
+                size=sum(len(file.data) for file in gpx_files),
             )
 
         except ValueError as e:
