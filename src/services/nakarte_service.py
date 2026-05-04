@@ -2,6 +2,7 @@
 
 import html
 import re
+import time
 from typing import Optional
 
 from playwright.async_api import (
@@ -26,6 +27,7 @@ class NakarteService:
         self,
         headless: bool = True,
         timeout: int = 30000,
+        app_ready_timeout: int = 8000,
         logger: Optional[BoundLogger] = None,
     ):
         """
@@ -34,10 +36,12 @@ class NakarteService:
         Args:
             headless: Run browser in headless mode
             timeout: Browser timeout in milliseconds
+            app_ready_timeout: Max wait for early app readiness signal in milliseconds
             logger: Logger instance
         """
         self.headless = headless
         self.timeout = timeout
+        self.app_ready_timeout = app_ready_timeout
         self.logger = logger or get_logger(__name__)
         self._browser: Optional[Browser] = None
         self._playwright = None
@@ -165,19 +169,54 @@ class NakarteService:
             raise ValueError(f"Invalid nakarte.me URL: {url}")
 
         track_id = self.extract_track_id(url)
+        total_start = time.perf_counter()
         self.logger.info("downloading_gpx", url=url, track_id=track_id)
 
+        browser_start = time.perf_counter()
         browser = await self._get_browser()
+        self.logger.info(
+            "browser_ready",
+            track_id=track_id,
+            duration_ms=int((time.perf_counter() - browser_start) * 1000),
+        )
         page: Optional[Page] = None
 
         try:
+            page_start = time.perf_counter()
             page = await browser.new_page()
+            self.logger.info(
+                "page_created",
+                track_id=track_id,
+                duration_ms=int((time.perf_counter() - page_start) * 1000),
+            )
 
             self.logger.info("navigating_to_url", url=url)
-            await page.goto(url, wait_until="networkidle", timeout=self.timeout)
+            navigation_start = time.perf_counter()
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
+            self.logger.info(
+                "page_loaded",
+                track_id=track_id,
+                duration_ms=int((time.perf_counter() - navigation_start) * 1000),
+            )
 
             self.logger.info("waiting_for_app_initialization")
-            await page.wait_for_timeout(12000)
+            app_wait_start = time.perf_counter()
+            try:
+                await page.wait_for_function(
+                    "() => !!window.app?.trackManager || !!window.webpackChunknakarte",
+                    timeout=min(self.timeout, self.app_ready_timeout),
+                )
+                self.logger.info(
+                    "app_initialization_detected",
+                    track_id=track_id,
+                    duration_ms=int((time.perf_counter() - app_wait_start) * 1000),
+                )
+            except PlaywrightTimeoutError:
+                self.logger.warning(
+                    "app_initialization_wait_timeout",
+                    track_id=track_id,
+                    duration_ms=int((time.perf_counter() - app_wait_start) * 1000),
+                )
 
             page_debug = await page.evaluate(
                 """
@@ -193,6 +232,7 @@ class NakarteService:
             )
             self.logger.info("page_debug", **page_debug)
 
+            extraction_start = time.perf_counter()
             gpx_data = await page.evaluate(
                 """
                 async (trackId) => {
@@ -815,6 +855,11 @@ class NakarteService:
                 """,
                 track_id,
             )
+            self.logger.info(
+                "gpx_extraction_finished",
+                track_id=track_id,
+                duration_ms=int((time.perf_counter() - extraction_start) * 1000),
+            )
 
             gpx_source = None
             if isinstance(gpx_data, dict):
@@ -831,14 +876,30 @@ class NakarteService:
             )
             gpx_bytes = self.ensure_friendly_track_name(gpx_bytes, track_id)
 
-            self.logger.info("gpx_downloaded", track_id=track_id, size=len(gpx_bytes), source=gpx_source)
+            self.logger.info(
+                "gpx_downloaded",
+                track_id=track_id,
+                size=len(gpx_bytes),
+                source=gpx_source,
+                duration_ms=int((time.perf_counter() - total_start) * 1000),
+            )
             return gpx_bytes
 
         except PlaywrightTimeoutError as e:
-            self.logger.error("browser_timeout", url=url, error=str(e))
+            self.logger.error(
+                "browser_timeout",
+                url=url,
+                error=str(e),
+                duration_ms=int((time.perf_counter() - total_start) * 1000),
+            )
             raise RuntimeError(f"Timeout while loading page: {str(e)}")
         except Exception as e:
-            self.logger.error("gpx_download_error", url=url, error=str(e))
+            self.logger.error(
+                "gpx_download_error",
+                url=url,
+                error=str(e),
+                duration_ms=int((time.perf_counter() - total_start) * 1000),
+            )
             raise RuntimeError(f"Failed to download GPX: {str(e)}")
         finally:
             if page:

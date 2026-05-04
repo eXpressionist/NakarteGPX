@@ -1,7 +1,10 @@
 """Cache service for storing GPX files."""
 
+import asyncio
 import hashlib
+import json
 import os
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
@@ -152,40 +155,88 @@ class FileCache(CacheService):
         key_hash = hashlib.sha256(key.encode()).hexdigest()
         return self.cache_dir / f"{key_hash}.gpx"
 
+    def _get_meta_path(self, key: str) -> Path:
+        """Get metadata path for cache key."""
+        key_hash = hashlib.sha256(key.encode()).hexdigest()
+        return self.cache_dir / f"{key_hash}.json"
+
+    def _read_file(self, file_path: Path) -> bytes:
+        with open(file_path, "rb") as f:
+            return f.read()
+
+    def _write_file(self, file_path: Path, value: bytes) -> None:
+        tmp_path = file_path.with_suffix(f"{file_path.suffix}.tmp")
+        with open(tmp_path, "wb") as f:
+            f.write(value)
+        os.replace(tmp_path, file_path)
+
+    def _write_metadata(self, meta_path: Path, ttl: Optional[int]) -> None:
+        if ttl is None:
+            if meta_path.exists():
+                meta_path.unlink()
+            return
+
+        expires_at = time.time() + ttl
+        tmp_path = meta_path.with_suffix(f"{meta_path.suffix}.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump({"expires_at": expires_at}, f)
+        os.replace(tmp_path, meta_path)
+
+    def _is_expired(self, meta_path: Path) -> bool:
+        if not meta_path.exists():
+            return False
+
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return True
+
+        expires_at = metadata.get("expires_at")
+        return isinstance(expires_at, (int, float)) and time.time() >= expires_at
+
+    def _delete_cache_files(self, file_path: Path, meta_path: Path) -> None:
+        for path in (file_path, meta_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
     async def get(self, key: str) -> Optional[bytes]:
         """Get value from file cache."""
         try:
             file_path = self._get_file_path(key)
-            if file_path.exists():
-                with open(file_path, "rb") as f:
-                    value = f.read()
+            meta_path = self._get_meta_path(key)
+            if await asyncio.to_thread(self._is_expired, meta_path):
+                await asyncio.to_thread(self._delete_cache_files, file_path, meta_path)
+                self.logger.info("cache_expired", key=key)
+                return None
+
+            if await asyncio.to_thread(file_path.exists):
+                value = await asyncio.to_thread(self._read_file, file_path)
                 self.logger.info("cache_hit", key=key, file=str(file_path))
                 return value
-            else:
-                self.logger.info("cache_miss", key=key)
-                return None
+
+            self.logger.info("cache_miss", key=key)
+            return None
         except Exception as e:
             self.logger.error("cache_get_error", key=key, error=str(e))
             return None
 
     async def set(self, key: str, value: bytes, ttl: Optional[int] = None) -> None:
-        """Set value in file cache permanently."""
+        """Set value in file cache, optionally with TTL."""
         try:
             file_path = self._get_file_path(key)
-            with open(file_path, "wb") as f:
-                f.write(value)
+            meta_path = self._get_meta_path(key)
+            await asyncio.to_thread(self._write_file, file_path, value)
+            await asyncio.to_thread(self._write_metadata, meta_path, ttl)
             self.logger.info("cache_set", key=key, file=str(file_path), ttl=ttl)
         except Exception as e:
             self.logger.error("cache_set_error", key=key, error=str(e))
 
     async def exists(self, key: str) -> bool:
         """Check if key exists in file cache."""
-        try:
-            file_path = self._get_file_path(key)
-            return file_path.exists()
-        except Exception as e:
-            self.logger.error("cache_exists_error", key=key, error=str(e))
-            return False
+        return await self.get(key) is not None
 
     async def close(self) -> None:
         """Close file cache (no-op for file-based cache)."""

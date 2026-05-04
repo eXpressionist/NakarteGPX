@@ -1,5 +1,6 @@
 """Telegram bot handlers."""
 
+import asyncio
 import re
 import uuid
 from typing import Optional
@@ -26,6 +27,7 @@ class BotHandlers:
         cache_ttl: Optional[int] = None,
         bot_username: str = "",
         bot_id: Optional[int] = None,
+        max_concurrent_downloads: int = 1,
         logger: Optional[BoundLogger] = None,
     ):
         """
@@ -42,7 +44,36 @@ class BotHandlers:
         self.cache_ttl = cache_ttl
         self.bot_username = bot_username.lower().lstrip("@")
         self.bot_id = bot_id
+        self._download_semaphore = asyncio.Semaphore(max_concurrent_downloads)
+        self._inflight_downloads: dict[str, asyncio.Task[bytes]] = {}
+        self._inflight_lock = asyncio.Lock()
         self.logger = logger or get_logger(__name__)
+
+    async def _download_uncached_gpx(self, url: str) -> bytes:
+        """Run expensive GPX extraction with bounded concurrency."""
+        async with self._download_semaphore:
+            return await self.nakarte_service.download_gpx(url)
+
+    async def _download_gpx_singleflight(self, track_id: str, url: str) -> bytes:
+        """Share one in-progress download for identical track IDs."""
+        created_task = False
+        async with self._inflight_lock:
+            task = self._inflight_downloads.get(track_id)
+            if task is None:
+                task = asyncio.create_task(self._download_uncached_gpx(url))
+                self._inflight_downloads[track_id] = task
+                created_task = True
+                self.logger.info("download_started", track_id=track_id)
+            else:
+                self.logger.info("download_joined", track_id=track_id)
+
+        try:
+            return await task
+        finally:
+            if created_task:
+                async with self._inflight_lock:
+                    if self._inflight_downloads.get(track_id) is task:
+                        self._inflight_downloads.pop(track_id, None)
 
     def _extract_nakarte_url(self, text: str) -> Optional[str]:
         """Extract first nakarte URL from message text."""
@@ -253,7 +284,7 @@ class BotHandlers:
                 )
                 # Download GPX
                 await processing_msg.edit_text("⏳ Загружаю трек с nakarte.me...")
-                gpx_data = await self.nakarte_service.download_gpx(url)
+                gpx_data = await self._download_gpx_singleflight(track_id, url)
 
                 # Store in cache
                 await self.cache_service.set(cache_key, gpx_data, self.cache_ttl)

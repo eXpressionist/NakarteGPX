@@ -28,6 +28,7 @@ sys.modules.setdefault(
     types.SimpleNamespace(EventDict=dict, Processor=object),
 )
 
+import src.services.cache_service as cache_module
 from src.services.cache_service import FileCache, create_cache_service
 
 
@@ -44,3 +45,18 @@ async def test_file_cache_set_does_not_require_ttl(tmp_path):
     await cache.set("gpx:track", b"<gpx />")
 
     assert await cache.get("gpx:track") == b"<gpx />"
+
+
+@pytest.mark.asyncio
+async def test_file_cache_respects_ttl(tmp_path, monkeypatch):
+    current_time = 1000.0
+    monkeypatch.setattr(cache_module.time, "time", lambda: current_time)
+    cache = FileCache(cache_dir=str(tmp_path))
+
+    await cache.set("gpx:track", b"<gpx />", ttl=10)
+
+    assert await cache.get("gpx:track") == b"<gpx />"
+
+    current_time = 1011.0
+
+    assert await cache.get("gpx:track") is None

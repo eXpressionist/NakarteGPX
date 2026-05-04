@@ -41,6 +41,8 @@ class Application:
         self.cache_ttl = int(cache_ttl) if cache_ttl else None
         self.browser_headless = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"
         self.browser_timeout = int(os.getenv("BROWSER_TIMEOUT", "30000"))
+        self.nakarte_app_ready_timeout = int(os.getenv("NAKARTE_APP_READY_TIMEOUT", "8000"))
+        self.download_concurrency = int(os.getenv("DOWNLOAD_CONCURRENCY", "1"))
 
         # Redis configuration
         self.redis_host = os.getenv("REDIS_HOST", "localhost")
@@ -69,6 +71,7 @@ class Application:
         self.nakarte_service = NakarteService(
             headless=self.browser_headless,
             timeout=self.browser_timeout,
+            app_ready_timeout=self.nakarte_app_ready_timeout,
             logger=self.logger,
         )
 
@@ -102,6 +105,7 @@ class Application:
             cache_ttl=self.cache_ttl,
             bot_username=bot_username,
             bot_id=bot_id,
+            max_concurrent_downloads=self.download_concurrency,
             logger=self.logger,
         )
         handlers.register_handlers(self.dp)
